@@ -156,7 +156,7 @@ def get_response(user_input):
             results = query_database(sql_query)
 
             if isinstance(results, str) or not results:
-                return {"message": "GymRadar xin lỗi, hiện tại không có phòng gym phù hợp với mô tả của bạn."}
+                return {"promptResponse": "GymRadar xin lỗi, hiện tại không có phòng gym phù hợp với mô tả của bạn."}
 
             if len(results) == 1:
                 row = results[0]
@@ -218,11 +218,11 @@ def get_response(user_input):
             Câu hỏi: {user_input}
             """
             final_response = model.generate_content(prompt)
-            return {"message": final_response.text}
+            return {"promptResponse": final_response.text}
 
     except Exception as e:
         print(f"Error in get_response: {str(e)}")
-        return {"message": "GymRadar xin lỗi, đã có lỗi xảy ra. Vui lòng thử lại!"}
+        return {"promptResponse": "GymRadar xin lỗi, đã có lỗi xảy ra. Vui lòng thử lại!"}
 
 # Endpoint POST /chat
 @app.post("/chat", summary="Gửi câu hỏi đến chatbot", response_description="Trả về câu trả lời")
