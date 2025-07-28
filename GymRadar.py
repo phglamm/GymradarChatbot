@@ -44,10 +44,15 @@ model = genai.GenerativeModel("gemini-2.0-flash")
 # Định nghĩa schema dữ liệu
 class ChatRequest(BaseModel):
     prompt: str
+    longitude: float | None = None
+    latitude: float | None = None
+
     class Config:
         json_schema_extra = {
             "example": {
-                "prompt": "gợi ý phòng gym ở địa chỉ Ways Station"
+                "prompt": "Tìm phòng gym ở gần",
+                "longitude": 106.700981,
+                "latitude": 10.776889
             }
         }
 
@@ -70,97 +75,118 @@ app.add_middleware(
 # Hàm truy vấn cơ sở dữ liệu
 def query_database(query):
     try:
-        print(f"Executing query: {query}")  # Debug the exact query
+        print(f"Executing query: {query}")
         cursor.execute(query)
         results = cursor.fetchall()
-        print(f"Query results: {results}")  # Debug results
+        print(f"Query results: {results}")
         return results
     except pyodbc.Error as e:
-        print(f"Database error details: {str(e)}")  # Debug full error
+        print(f"Database error: {str(e)}")
         return f"Lỗi cơ sở dữ liệu: {str(e)}"
 
-# Hàm phân loại câu hỏi
+# Tạo query SQL tìm gym gần vị trí người dùng
+def build_nearby_gym_query(longitude, latitude, max_distance_km=5):
+    return f"""
+    SELECT *
+FROM (
+    SELECT 
+        Id, GymName, Since, Address, RepresentName, TaxCode, 
+        CAST(Longitude AS FLOAT) AS Longitude,
+        CAST(Latitude AS FLOAT) AS Latitude,
+        QRCode, HotResearch, AccountId, Active, 
+        CreateAt, UpdateAt, DeleteAt, MainImage,
+        6371 * acos(
+            cos(radians(10.805765)) *
+            cos(radians(CAST(Latitude AS FLOAT))) *
+            cos(radians(CAST(Longitude AS FLOAT)) - radians(106.741796)) +
+            sin(radians(10.805765)) *
+            sin(radians(CAST(Latitude AS FLOAT)))
+        ) AS distance_km
+    FROM dbo.Gym
+    WHERE Active = 1
+) AS gyms
+WHERE gyms.distance_km <= 5
+ORDER BY gyms.distance_km ASC;
+
+    """
+
+# Hàm phân loại prompt có cần query DB hay không
 def classify_query(user_input):
     prompt = f"""
     Xác định xem câu hỏi có yêu cầu truy vấn cơ sở dữ liệu không.
-    Cơ sở dữ liệu có một bảng:
-    - 'dbo.Gym' với cột: Id, GymName, Since, Address, RepresentName, TaxCode, Longitude, Latitude, QRCode, HotResearch, AccountId, Active, CreateAt, UpdateAt, DeleteAt, MainImage.
-    - Nếu câu hỏi yêu cầu thông tin từ Gym (ví dụ: gợi ý phòng gym theo địa chỉ như 'Ways Station', tên phòng gym như 'Gym Next', hoặc trạng thái 'Active'), trả về MỘT câu lệnh SELECT theo cú pháp SQL Server.
-      - Luôn SELECT các cột từ Gym: Id, GymName, Since, Address, RepresentName, TaxCode, Longitude, Latitude, QRCode, HotResearch, AccountId, Active, CreateAt, UpdateAt, DeleteAt, MainImage.
-      - Sử dụng WHERE để lọc theo Address, GymName, hoặc Active (nếu đề cập đến trạng thái).
-      - Nếu lọc theo Address hoặc GymName, sử dụng LIKE '%value%' để cho phép biến thể (ví dụ: LIKE '%Ways Station%').
-      - Nếu nhiều tiêu chí (ví dụ: 'Phòng gym ở Ways Station và Active'), kết hợp với AND.
-      - Nếu không đủ tiêu chí rõ ràng (ví dụ: 'Gợi ý phòng gym'), thử lọc theo GymName LIKE '%Gym%'.
-      - Nếu không tìm thấy kết quả, trả về truy vấn tối thiểu dựa trên tiêu chí rõ ràng nhất (ví dụ: chỉ Address).
-      - Ví dụ:
-        - 'Gợi ý phòng gym ở Ways Station' trả về:
-          SELECT Id, GymName, Since, Address, RepresentName, TaxCode, Longitude, Latitude, QRCode, HotResearch, AccountId, Active, CreateAt, UpdateAt, DeleteAt, MainImage 
-          FROM dbo.Gym 
-          WHERE Address LIKE '%Ways Station%'.
-        - 'Gợi ý phòng gym tên Gym Next' trả về:
-          SELECT Id, GymName, Since, Address, RepresentName, TaxCode, Longitude, Latitude, QRCode, HotResearch, AccountId, Active, CreateAt, UpdateAt, DeleteAt, MainImage 
-          FROM dbo.Gym 
-          WHERE GymName LIKE '%Gym Next%'.
-        - 'Gợi ý phòng gym Active' trả về:
-          SELECT Id, GymName, Since, Address, RepresentName, TaxCode, Longitude, Latitude, QRCode, HotResearch, AccountId, Active, CreateAt, UpdateAt, DeleteAt, MainImage 
-          FROM dbo.Gym 
-          WHERE Active = 1.
-    - Nếu không, trả về 'NO_DB_QUERY'.
+    Nếu có, trả về câu lệnh SELECT phù hợp. Nếu không, trả về 'NO_DB_QUERY'.
+
+    Dữ liệu nằm ở bảng dbo.Gym với các cột: Id, GymName, Since, Address, RepresentName, TaxCode,
+    Longitude, Latitude, QRCode, HotResearch, AccountId, Active, CreateAt, UpdateAt, DeleteAt, MainImage.
+
     Câu hỏi: {user_input}
 
     Chỉ trả về SQL hoặc 'NO_DB_QUERY'.
     """
+
     try:
         response = model.generate_content(prompt)
-        print(f"Raw Gemini response: {response.text}")  # Debug raw output
         lines = [line.strip() for line in response.text.splitlines() if line.strip()]
         result = " ".join(lines).replace("```sql", "").replace("```", "").strip()
-        print(f"Processed query: {result}")  # Debug processed output
 
-        if not result:
-            print("Empty query after processing")
+        if not result or result == "NO_DB_QUERY":
             return False, None
+        if result.lower().startswith("select") and "from dbo.gym" in result.lower():
+            return True, result
 
-        if result == "NO_DB_QUERY":
-            return False, None
-
-        if result.lower().startswith("select"):
-            # Kiểm tra cú pháp SQL cơ bản
-            if "from dbo.gym" in result.lower():
-                return True, result
-            else:
-                print(f"Invalid SQL: Missing required table, full text: {result}")
-                return False, None
-        else:
-            print(f"Validation failed: Query does not start with 'select', full text: {result}")
-            return False, None
-
+        return False, None
     except Exception as e:
         print(f"Gemini error: {str(e)}")
         return False, None
 
-# Hàm xử lý và trả về câu trả lời
-def get_response(user_input):
+# Hàm xử lý chính
+def get_response(user_input, longitude=None, latitude=None):
     try:
-        is_db_query, sql_query = classify_query(user_input)
-
-        project_context = """
-        Bạn là chatbot của GymRadar. Luôn sử dụng 'GymRadar' làm chủ ngữ. 
-        Bạn là chatbot của ứng dụng GymRadar là ứng dụng cho phép người dùng tìm kiếm, đăng ký phòng Gym, các khoá tập,...
-        Bạn sẽ hiểu rõ hơn về vấn đề sức khoẻ, Gym.
-        Trả lời thân thiện, tự nhiên bằng tiếng Việt.
-        """
-
-        if is_db_query:
-            print("Truy vấn SQL:", sql_query)
+        # Xử lý nếu câu hỏi yêu cầu tìm gần và có tọa độ
+        if longitude and latitude and "gần" in user_input.lower():
+            sql_query = build_nearby_gym_query(longitude, latitude)
             results = query_database(sql_query)
 
             if isinstance(results, str) or not results:
-                return {"promptResponse": "GymRadar xin lỗi, hiện tại không có phòng gym phù hợp với mô tả của bạn."}
+                return {"promptResponse": "GymRadar xin lỗi, không tìm thấy phòng gym nào gần bạn."}
 
-            if len(results) == 1:
-                row = results[0]
-                gym = {
+            gyms = []
+            for row in results:
+                gyms.append({
+                    "id": str(row.Id),
+                    "gymName": row.GymName,
+                    "since": row.Since,
+                    "address": row.Address,
+                    "representName": row.RepresentName,
+                    "taxCode": row.TaxCode,
+                    "longitude": row.Longitude,
+                    "latitude": row.Latitude,
+                    "qrCode": row.QRCode,
+                    "hotResearch": row.HotResearch,
+                    "accountId": str(row.AccountId),
+                    "active": row.Active,
+                    "createAt": row.CreateAt.isoformat() if row.CreateAt else None,
+                    "updateAt": row.UpdateAt.isoformat() if row.UpdateAt else None,
+                    "deleteAt": row.DeleteAt.isoformat() if row.DeleteAt else None,
+                    "mainImage": row.MainImage,
+                    "distance_km": round(row.distance_km, 2)
+                })
+
+            prompt_response = "GymRadar gợi ý các phòng gym gần bạn:\n" + "\n".join(
+                [f"{g['gymName']} ({g['distance_km']} km)" for g in gyms]
+            )
+            return {"gyms": gyms, "promptResponse": prompt_response}
+
+        # Nếu không, phân loại bình thường
+        is_db_query, sql_query = classify_query(user_input)
+        if is_db_query:
+            results = query_database(sql_query)
+            if isinstance(results, str) or not results:
+                return {"promptResponse": "GymRadar xin lỗi, không có phòng gym phù hợp với yêu cầu của bạn."}
+
+            gyms = []
+            for row in results:
+                gyms.append({
                     "id": str(row.Id),
                     "gymName": row.GymName,
                     "since": row.Since,
@@ -177,58 +203,30 @@ def get_response(user_input):
                     "updateAt": row.UpdateAt.isoformat() if row.UpdateAt else None,
                     "deleteAt": row.DeleteAt.isoformat() if row.DeleteAt else None,
                     "mainImage": row.MainImage
-                }
-                prompt_response = f"GymRadar gợi ý bạn ghé thăm {row.GymName} tại {row.Address}. Phòng gym này hoạt động từ {row.Since}!"
-                return {
-                    "gym": gym,
-                    "promptResponse": prompt_response
-                }
-            else:
-                gyms = [
-                    {
-                        "id": str(row.Id),
-                        "gymName": row.GymName,
-                        "since": row.Since,
-                        "address": row.Address,
-                        "representName": row.RepresentName,
-                        "taxCode": row.TaxCode,
-                        "longitude": row.Longitude,
-                        "latitude": row.Latitude,
-                        "qrCode": row.QRCode,
-                        "hotResearch": row.HotResearch,
-                        "accountId": str(row.AccountId),
-                        "active": row.Active,
-                        "createAt": row.CreateAt.isoformat() if row.CreateAt else None,
-                        "updateAt": row.UpdateAt.isoformat() if row.UpdateAt else None,
-                        "deleteAt": row.DeleteAt.isoformat() if row.DeleteAt else None,
-                        "mainImage": row.MainImage
-                    } for row in results
-                ]
-                gym_names = ", ".join([row.GymName for row in results])
-                prompt_response = f"GymRadar gợi ý bạn ghé thăm: {gym_names}. Các phòng gym này đều có địa chỉ đáng chú ý!"
-                return {
-                    "gyms": gyms,
-                    "promptResponse": prompt_response
-                }
+                })
 
-        else:
-            prompt = f"""
-            {project_context}
-            Trả lời câu hỏi sau tự nhiên, bằng tiếng Việt:
-            Câu hỏi: {user_input}
-            """
-            final_response = model.generate_content(prompt)
-            return {"promptResponse": final_response.text}
+            if len(gyms) == 1:
+                g = gyms[0]
+                prompt_response = f"GymRadar gợi ý bạn ghé thăm {g['gymName']} tại {g['address']}."
+            else:
+                names = ", ".join([g["gymName"] for g in gyms])
+                prompt_response = f"GymRadar gợi ý các phòng gym sau: {names}."
+            return {"gyms": gyms, "promptResponse": prompt_response}
+
+        # Trả lời tự do bằng Gemini
+        project_context = "Bạn là chatbot GymRadar, trả lời thân thiện, tự nhiên, bằng tiếng Việt."
+        prompt = f"{project_context}\nCâu hỏi: {user_input}"
+        response = model.generate_content(prompt)
+        return {"promptResponse": response.text}
 
     except Exception as e:
-        print(f"Error in get_response: {str(e)}")
-        return {"promptResponse": "GymRadar xin lỗi, đã có lỗi xảy ra. Vui lòng thử lại!"}
+        print(f"Lỗi trong get_response: {str(e)}")
+        return {"promptResponse": "GymRadar xin lỗi, đã xảy ra lỗi."}
 
-# Endpoint POST /chat
+# API endpoint
 @app.post("/chat", summary="Gửi câu hỏi đến chatbot", response_description="Trả về câu trả lời")
 async def chat(request: ChatRequest):
-    response = get_response(request.prompt)
-    return response
+    return get_response(request.prompt, request.longitude, request.latitude)
 
 # Chạy ứng dụng
 if __name__ == "__main__":
