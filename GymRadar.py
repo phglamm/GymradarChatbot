@@ -96,16 +96,16 @@ FROM (
         QRCode, HotResearch, AccountId, Active, 
         CreateAt, UpdateAt, DeleteAt, MainImage,
         6371 * acos(
-            cos(radians(10.805765)) *
+            cos(radians({latitude})) *
             cos(radians(CAST(Latitude AS FLOAT))) *
-            cos(radians(CAST(Longitude AS FLOAT)) - radians(106.741796)) +
-            sin(radians(10.805765)) *
+            cos(radians(CAST(Longitude AS FLOAT)) - radians({longitude})) +
+            sin(radians({latitude})) *
             sin(radians(CAST(Latitude AS FLOAT)))
         ) AS distance_km
     FROM dbo.Gym
     WHERE Active = 1
 ) AS gyms
-WHERE gyms.distance_km <= 5
+WHERE gyms.distance_km <= {max_distance_km}
 ORDER BY gyms.distance_km ASC;
 
     """
