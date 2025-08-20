@@ -216,7 +216,7 @@ def query_database(query):
         return f"Lỗi cơ sở dữ liệu: {str(e)}"
 
 # Xây dựng truy vấn SQL để tìm gym gần
-def build_nearby_gym_query(longitude, latitude, max_distance_km=10):
+def build_nearby_gym_query(longitude, latitude, max_distance_km= 10):
     """Xây dựng truy vấn SQL để tìm gym gần sử dụng công thức Haversine"""
     # Tối ưu hóa với bounding box để giảm tải tính toán
     lat_range = max_distance_km / 111.0  # 1 độ vĩ độ ≈ 111km
@@ -256,16 +256,111 @@ def get_nearby_distance_preference(user_input):
     """Phân tích đầu vào của người dùng để xác định bán kính tìm kiếm phù hợp"""
     user_input_lower = user_input.lower()
     
-    if any(word in user_input_lower for word in ["rất gần", "very close", "walking distance", "đi bộ"]):
-        return 2  # 2km - khoảng cách đi bộ
-    elif any(word in user_input_lower for word in ["gần", "nearby", "close", "lân cận"]):
-        return 5  # 5km - khoảng cách vừa phải
-    elif any(word in user_input_lower for word in ["xa một chút", "farther", "trong khu vực", "khu vực"]):
-        return 10  # 10km - khu vực rộng hơn
-    elif any(word in user_input_lower for word in ["tất cả", "all", "anywhere", "bất kỳ đâu"]):
-        return 50  # 50km - rất rộng
+    # 1. Tìm số km cụ thể trong câu (ưu tiên cao nhất)
+    import re
+    km_match = re.search(r'(\d+)\s*km', user_input_lower)
+    if km_match:
+        distance = int(km_match.group(1))
+        # Giới hạn khoảng cách hợp lý (1-50km)
+        return max(1, min(distance, 50))
+    
+    # 2. Phân tích theo cấp độ khoảng cách với từ khóa thông minh
+    distance_patterns = {
+        # Rất gần - 2km
+        2: [
+            r'(rất gần|very close|walking distance|đi bộ|đi bộ được)',
+            r'(ngay gần|sát bên|cực gần|siêu gần)',
+            r'(trong phạm vi \d{1,3}\s*m|dưới 1km|under 1km)'
+        ],
+        
+        # Gần - 5km  
+        5: [
+            r'(gần|nearby|close|lân cận|kề bên)',
+            r'(quanh đây|xung quanh|around here)',
+            r'(không xa|not far|gần nhà|near home)'
+        ],
+        
+        # Trung bình - 10km
+        10: [
+            r'(khu vực|trong khu|in the area|local)',
+            r'(xa một chút|bit farther|hơi xa)',
+            r'(trong thành phố|in the city|cùng thành phố)'
+        ],
+        
+        # Xa - 15km
+        15: [
+            r'(xa hơn|farther|more distant)',
+            r'(trong tỉnh|in province|cùng tỉnh)',
+            r'(mở rộng|expand|extend)'
+        ],
+        
+        # Rất xa - 25km
+        25: [
+            r'(rất xa|very far|distant)',
+            r'(khắp nơi|everywhere|anywhere)',
+            r'(toàn bộ|all|entire|whole)'
+        ],
+        
+        # Không giới hạn - 50km
+        50: [
+            r'(tất cả|all gyms|mọi|every|bất kỳ đâu)',
+            r'(không giới hạn|unlimited|no limit)',
+            r'(toàn quốc|nationwide|whole country)'
+        ]
+    }
+    
+    # 3. Duyệt qua các pattern theo thứ tự ưu tiên
+    for distance, patterns in distance_patterns.items():
+        for pattern in patterns:
+            if re.search(pattern, user_input_lower):
+                return distance
+    
+    # 4. Phân tích thông minh dựa trên ngữ cảnh
+    
+    # Nếu có từ khóa về phương tiện di chuyển
+    transport_keywords = {
+        r'(xe đạp|bicycle|bike)': 8,
+        r'(xe máy|motorbike|scooter)': 15, 
+        r'(ô tô|car|drive|driving)': 20,
+        r'(xe bus|bus|public transport)': 12
+    }
+    
+    for pattern, distance in transport_keywords.items():
+        if re.search(pattern, user_input_lower):
+            return distance
+    
+    # Nếu có từ khóa về thời gian
+    time_keywords = {
+        r'(5 phút|5min|năm phút)': 3,
+        r'(10 phút|10min|mười phút)': 5,
+        r'(15 phút|15min|mười lăm phút)': 8,
+        r'(20 phút|20min|hai mươi phút)': 12,
+        r'(30 phút|30min|nửa giờ|half hour)': 18
+    }
+    
+    for pattern, distance in time_keywords.items():
+        if re.search(pattern, user_input_lower):
+            return distance
+    
+    # 5. Phân tích theo địa danh cụ thể
+    location_keywords = {
+        r'(quận \d+|district \d+)': 8,        # Trong quận
+        r'(thành phố|city|tp\.)': 15,         # Trong thành phố  
+        r'(tỉnh|province|tỉnh thành)': 25,    # Trong tỉnh
+        r'(huyện|county|suburban)': 20        # Ngoại thành
+    }
+    
+    for pattern, distance in location_keywords.items():
+        if re.search(pattern, user_input_lower):
+            return distance
+    
+    # 6. Mặc định thông minh dựa trên độ dài câu
+    if len(user_input_lower.split()) <= 3:
+        return 8   # Câu ngắn -> tìm gần
+    elif len(user_input_lower.split()) <= 6:
+        return 10  # Câu trung bình -> tìm vừa
     else:
-        return 8  # Mặc định 8km
+        return 12  # Câu dài -> có thể muốn tìm rộng hơn
 
 def format_distance_friendly(distance_km):
     """Định dạng khoảng cách theo cách thân thiện với người dùng"""
@@ -341,7 +436,7 @@ def extract_search_keywords(user_input):
     return keywords
 
 def intelligent_gym_search(user_input):
-    """Tìm kiếm gym thông minh với khả năng khớp mờ"""
+    """Tìm kiếm gym thông minh với khả năng phân tích ngữ nghĩa nâng cao"""
     try:
         # Kiểm tra đầu vào
         if not user_input or not isinstance(user_input, str):
@@ -349,97 +444,179 @@ def intelligent_gym_search(user_input):
         
         user_input_lower = user_input.lower()
         
-        # Danh sách từ khóa chỉ rõ KHÔNG cần tìm kiếm gym
+        # 1. Danh sách từ khóa chỉ rõ KHÔNG cần tìm kiếm gym (mở rộng)
         non_gym_indicators = [
-            'xin chào', 'hello', 'hi', 'chào bạn',
-            'cảm ơn', 'thank you', 'thanks',
-            'tên tôi', 'my name', 'lặp lại tên',
-            'làm sao để', 'how to', 'cách để',
-            'ăn gì', 'what to eat', 'thời tiết',
-            'ok', 'được rồi', 'good', 'tạm biệt'
+            # Chào hỏi và lịch sự
+            'xin chào', 'hello', 'hi', 'chào bạn', 'hey there',
+            'cảm ơn', 'thank you', 'thanks', 'cám ơn', 'tks',
+            'tạm biệt', 'bye', 'goodbye', 'see you',
+            
+            # Câu hỏi cá nhân  
+            'tên tôi', 'my name', 'lặp lại tên', 'nhắc lại tên',
+            'tôi là ai', 'who am i', 'remember me',
+            
+            # Tư vấn sức khỏe không cần gym cụ thể
+            'làm sao để', 'how to', 'cách để', 'how can i',
+            'ăn gì để', 'what to eat', 'what should i eat',
+            'bài tập nào', 'what exercise', 'which workout',
+            'tăng cân', 'giảm cân', 'lose weight', 'gain weight',
+            'thời tiết', 'weather', 'nhiệt độ', 'temperature',
+            
+            # Phản hồi chung
+            'ok', 'được rồi', 'tốt', 'good', 'fine', 'great',
+            'đồng ý', 'agree', 'yes', 'no problem'
         ]
         
-        # Nếu có từ khóa không liên quan gym, return None
+        # Nếu có từ khóa không liên quan gym, return None ngay
         if any(indicator in user_input_lower for indicator in non_gym_indicators):
             return None
         
-        # Danh sách từ khóa bắt buộc để tìm kiếm gym
-        gym_required_keywords = [
-            'gym', 'fitness', 'thể dục', 'thể hình',
-            'phòng gym', 'trung tâm', 'center', 'club',
-            'tìm', 'search', 'ở đâu', 'where', 'địa chỉ',
-            'gần', 'near', 'nearby', 'quanh',
-            'quận', 'district', 'thành phố'
+        # 2. Phân tích ý định tìm kiếm gym (cải thiện)
+        gym_search_patterns = [
+            # Tìm kiếm trực tiếp
+            r'(tìm|find|search|looking for)\s*(gym|phòng gym|fitness|thể dục)',
+            r'(gym|phòng gym|fitness)\s*(nào|what|which|where)',
+            r'(có|is there|are there)\s*(gym|phòng gym|fitness)',
+            
+            # Tìm kiếm theo địa điểm
+            r'(gym|phòng gym|fitness)\s*(ở|at|in|near|gần)\s*(\w+)',
+            r'(quận|district|huyện|thành phố|city)\s*\d*.*?(gym|phòng gym|fitness)',
+            
+            # Tìm kiếm theo đặc điểm
+            r'(gym|phòng gym|fitness)\s*(hot|nổi tiếng|phổ biến|tốt|best)',
+            r'(hot|nổi tiếng|phổ biến|tốt|best)\s*(gym|phòng gym|fitness)',
+            
+            # Tìm kiếm mở
+            r'(danh sách|list)\s*(gym|phòng gym|fitness)',
+            r'(tất cả|all)\s*(gym|phòng gym|fitness)',
+            r'(những|the)\s*(gym|phòng gym|fitness)\s*(nào|what)'
         ]
         
-        # Chỉ tiếp tục nếu có từ khóa liên quan gym
-        has_gym_keyword = any(keyword in user_input_lower for keyword in gym_required_keywords)
-        if not has_gym_keyword:
-            return None
-            
-        intents = detect_search_intent(user_input)
-        keywords = extract_search_keywords(user_input)
+        # Kiểm tra xem có khớp với pattern tìm kiếm gym không
+        has_gym_search_intent = any(re.search(pattern, user_input_lower) for pattern in gym_search_patterns)
         
+        # Nếu không có ý định tìm kiếm gym rõ ràng, return None
+        if not has_gym_search_intent:
+            return None
+        
+        # 3. Trích xuất thông tin tìm kiếm thông minh
+        search_info = {
+            'keywords': [],
+            'location': None,
+            'hot_search': False,
+            'search_type': 'general'
+        }
+        
+        # Trích xuất từ khóa quan trọng (bỏ stop words)
+        stop_words = {
+            'tìm', 'find', 'search', 'có', 'không', 'nào', 'đâu', 'where', 
+            'what', 'gì', 'là', 'ở', 'tại', 'trong', 'của', 'một', 'vài', 
+            'những', 'các', 'the', 'a', 'an', 'and', 'or', 'for', 'gym', 
+            'phòng', 'fitness', 'center', 'club'
+        }
+        
+        words = re.findall(r'\b\w+\b', normalize_vietnamese_text(user_input))
+        keywords = [word for word in words if word not in stop_words and len(word) >= 2]
+        search_info['keywords'] = keywords[:5]  # Lấy tối đa 5 từ khóa quan trọng nhất
+        
+        # Phát hiện tìm kiếm hot/phổ biến
+        hot_patterns = [
+            r'(hot|nổi tiếng|phổ biến|được yêu thích|tốt nhất|best|top)',
+            r'(recommend|gợi ý|đề xuất|suggest)'
+        ]
+        search_info['hot_search'] = any(re.search(pattern, user_input_lower) for pattern in hot_patterns)
+        
+        # Phát hiện địa điểm cụ thể
+        location_patterns = [
+            r'(quận|district)\s*(\d+)',
+            r'(huyện|county)\s*(\w+)',
+            r'(thành phố|city|tp\.?)\s*(\w+)',
+            r'(ở|tại|in|at)\s*(\w+)'
+        ]
+        
+        for pattern in location_patterns:
+            match = re.search(pattern, user_input_lower)
+            if match:
+                search_info['location'] = match.group(0)
+                break
+        
+        # 4. Xây dựng truy vấn SQL thông minh
         base_conditions = ["Active = 1"]
         
-        # Lọc gym hot nếu tìm kiếm phổ biến
-        if 'popular_search' in intents:
+        # Ưu tiên gym hot nếu có yêu cầu
+        if search_info['hot_search']:
             base_conditions.append("HotResearch = 1")
+            search_info['search_type'] = 'hot'
         
         # Xây dựng điều kiện tìm kiếm từ keywords
         search_conditions = []
-        if keywords:
-            for keyword in keywords:
-                # Kiểm tra keyword có hợp lệ không
-                if keyword and isinstance(keyword, str) and keyword.lower() not in ['hot', 'nổi', 'tiếng', 'phổ', 'biến', 'yêu', 'thích', 'tốt', 'nhất', 'best']:
-                    # Escape single quotes để tránh SQL injection
-                    safe_keyword = keyword.replace("'", "''")
-                    search_conditions.extend([
-                        f"GymName LIKE '%{safe_keyword}%'",
-                        f"Address LIKE '%{safe_keyword}%'",
-                        f"RepresentName LIKE '%{safe_keyword}%'"
-                    ])
+        valid_keywords = []
+        
+        for keyword in search_info['keywords']:
+            if keyword and len(keyword) >= 2:
+                # Escape single quotes để tránh SQL injection
+                safe_keyword = keyword.replace("'", "''")
+                valid_keywords.append(safe_keyword)
+                search_conditions.extend([
+                    f"GymName LIKE '%{safe_keyword}%'",
+                    f"Address LIKE '%{safe_keyword}%'",
+                    f"RepresentName LIKE '%{safe_keyword}%'"
+                ])
+        
+        # Thêm điều kiện địa điểm nếu có
+        if search_info['location']:
+            safe_location = search_info['location'].replace("'", "''")
+            search_conditions.extend([
+                f"Address LIKE '%{safe_location}%'",
+                f"GymName LIKE '%{safe_location}%'"
+            ])
         
         # Xây dựng mệnh đề WHERE
         where_clause = " AND ".join(base_conditions)
+        
         if search_conditions:
             keyword_clause = " OR ".join(search_conditions)
-            where_clause += f" AND ({keyword_clause})"
-        elif 'popular_search' not in intents:
+            where_clause += f" OR ({keyword_clause})"
+        elif not search_info['hot_search']:
+            # Nếu không có từ khóa và không phải tìm kiếm hot, return None
             return None
         
-        # Xây dựng truy vấn SQL
-        first_keyword = None
-        if keywords:
-            for k in keywords:
-                if k and isinstance(k, str) and k.lower() not in ['hot', 'nổi', 'tiếng', 'phổ', 'biến', 'yêu', 'thích', 'tốt', 'nhất', 'best']:
-                    first_keyword = k.replace("'", "''")  # Escape single quotes
-                    break
-        
-        if first_keyword:
+        # 5. Tạo SQL query với scoring thông minh
+        if valid_keywords:
+            primary_keyword = valid_keywords[0]
             sql_query = f"""
             SELECT *, 
-                   CASE WHEN HotResearch = 1 THEN 10 ELSE 0 END as hot_score,
+                   CASE WHEN HotResearch = 1 THEN 20 ELSE 0 END as hot_score,
                    CASE 
-                       WHEN GymName LIKE '%{first_keyword}%' THEN 20
-                       WHEN Address LIKE '%{first_keyword}%' THEN 15
-                       WHEN RepresentName LIKE '%{first_keyword}%' THEN 10
+                       WHEN GymName LIKE '%{primary_keyword}%' THEN 30
+                       WHEN Address LIKE '%{primary_keyword}%' THEN 25
+                       WHEN RepresentName LIKE '%{primary_keyword}%' THEN 15
                        ELSE 5
-                   END as relevance_score
+                   END as relevance_score,
+                   CASE 
+                       WHEN CreateAt >= DATEADD(year, -1, GETDATE()) THEN 5 
+                       ELSE 0 
+                   END as recency_score
             FROM dbo.Gym 
             WHERE {where_clause}
-            ORDER BY hot_score DESC, relevance_score DESC, GymName ASC
+            ORDER BY hot_score DESC, relevance_score DESC, recency_score DESC, GymName ASC
             """
         else:
+            # Query cho tìm kiếm general hoặc hot gym
             sql_query = f"""
             SELECT *, 
-                   CASE WHEN HotResearch = 1 THEN 10 ELSE 0 END as hot_score,
-                   5 as relevance_score
+                   CASE WHEN HotResearch = 1 THEN 20 ELSE 0 END as hot_score,
+                   10 as relevance_score,
+                   CASE 
+                       WHEN CreateAt >= DATEADD(year, -1, GETDATE()) THEN 5 
+                       ELSE 0 
+                   END as recency_score
             FROM dbo.Gym 
             WHERE {where_clause}
-            ORDER BY hot_score DESC, GymName ASC
+            ORDER BY hot_score DESC, relevance_score DESC, recency_score DESC, GymName ASC
             """
         
+        print(f"🤖 INTELLIGENT SEARCH: Input='{user_input}' | Type={search_info['search_type']} | Keywords={search_info['keywords'][:3]}")
         return sql_query
         
     except Exception as e:
@@ -470,56 +647,41 @@ def detect_search_intent(user_input):
     return detected_intents
 
 def classify_query(user_input):
-    """Phân loại truy vấn và tạo SQL nếu cần"""
-    prompt = f"""
-    Bạn là chuyên gia phân tích truy vấn tìm kiếm gym. Nhiệm vụ: Phân tích truy vấn và quyết định có cần truy vấn database hay không.
-
-    CHỈ TẠO SQL KHI:
-    - Tìm kiếm gym theo tên: "gym Elite", "tìm California"
-    - Tìm kiếm theo địa điểm: "gym ở quận 1", "phòng gym Bình Thạnh"
-    - Tìm gym phổ biến: "gym hot", "gym nổi tiếng", "top gym"
-    - Liệt kê gym: "tất cả gym", "danh sách gym", "có những gym nào"
-    - Tìm theo tiêu chí: "gym mới", "gym có bể bơi"
-
-    LUÔN TRẢ VỀ "NO_DB_QUERY" KHI:
-    - Chào hỏi: "xin chào", "hello", "hi"
-    - Câu hỏi cá nhân: "tên tôi là gì", "lặp lại tên tôi"
-    - Tư vấn chung: "làm sao để tăng cân", "bài tập nào tốt"
-    - Câu hỏi về sức khỏe: "ăn gì để tăng cơ"
-    - Hội thoại tự nhiên: "cảm ơn", "ok", "được rồi"
-    - Câu hỏi không liên quan gym: "thời tiết hôm nay", "giá cả thế nào"
-
-    Cơ sở dữ liệu: dbo.Gym
-    Cột: Id, GymName, Address, HotResearch (1=phổ biến), Active, CreateAt, etc.
-    
-    Luôn bao gồm: WHERE Active = 1
-    
-    Ví dụ SQL:
-    - "gym Elite" → SELECT * FROM dbo.Gym WHERE Active = 1 AND GymName LIKE '%Elite%'
-    - "gym ở quận 1" → SELECT * FROM dbo.Gym WHERE Active = 1 AND Address LIKE '%District 1%'
-    - "gym hot" → SELECT * FROM dbo.Gym WHERE Active = 1 AND HotResearch = 1
-
-    Truy vấn: "{user_input}"
-    
-    Trả về chỉ SQL hoặc "NO_DB_QUERY":
-    """
-
+    """Phân loại truy vấn và tạo SQL nếu cần - Được cải thiện"""
     try:
-        # Thử tìm kiếm thông minh trước
+        # 1. Ưu tiên sử dụng intelligent search trước
         intelligent_query = intelligent_gym_search(user_input)
         if intelligent_query:
+            print(f"✅ INTELLIGENT_SEARCH: Query generated successfully")
             return True, intelligent_query
         
-        # Sử dụng AI phân tích
-        response = model.generate_content(prompt)
-        result = response.text.strip().replace("```sql", "").replace("```", "")
+        # 2. Nếu intelligent search không tạo được query, có nghĩa là:
+        # - Câu hỏi không liên quan đến tìm kiếm gym
+        # - Hoặc là câu hỏi chào hỏi, tư vấn chung
         
-        if result == "NO_DB_QUERY" or "NO_DB_QUERY" in result:
-            return False, None
-        if result.lower().startswith("select") and "from dbo.gym" in result.lower():
-            return True, result
-
+        user_input_lower = user_input.lower()
+        
+        # 3. Kiểm tra một số trường hợp đặc biệt cuối cùng
+        special_gym_cases = [
+            'danh sách gym', 'list gym', 'all gym', 'tất cả gym',
+            'gym có những gì', 'gym nào', 'which gym'
+        ]
+        
+        if any(case in user_input_lower for case in special_gym_cases):
+            # Trường hợp muốn xem tất cả gym
+            return True, """
+            SELECT *, 
+                   CASE WHEN HotResearch = 1 THEN 20 ELSE 0 END as hot_score,
+                   10 as relevance_score
+            FROM dbo.Gym 
+            WHERE Active = 1
+            ORDER BY hot_score DESC, GymName ASC
+            """
+        
+        # 4. Nếu không khớp với trường hợp nào -> không cần query database
+        print(f"❌ NO_DB_QUERY: '{user_input}' không cần truy vấn database")
         return False, None
+        
     except Exception as e:
         print(f"Lỗi trong classify_query: {str(e)}")
         return False, None
@@ -543,6 +705,8 @@ def get_response_with_history(user_input, conversation_history=None, longitude=N
         # Xử lý tìm kiếm gần với tọa độ
         if longitude and latitude and any(keyword in user_input.lower() for keyword in ["gần", "near", "nearby", "xung quanh", "lân cận", "gần đây", "quanh đây"]):
             max_distance = get_nearby_distance_preference(user_input)
+            print(f"🎯 SMART RADIUS: User input '{user_input}' → Bán kính được chọn: {max_distance}km")
+            
             sql_query = build_nearby_gym_query(longitude, latitude, max_distance)
             results = query_database(sql_query)
 
@@ -559,6 +723,10 @@ def get_response_with_history(user_input, conversation_history=None, longitude=N
                 }
 
             gyms = [safe_get_row_data(row) for row in results]
+            print(f"🔍 DEBUG: Tìm thấy {len(gyms)} gym trong bán kính {max_distance}km")
+            for i, gym in enumerate(gyms):
+                print(f"  {i+1}. {gym['gymName']} - {gym.get('distance_km', 'N/A')}km")
+            
             prompt_response = create_simple_response(gyms, user_input, is_nearby=True)
 
             current_conversation.append({
@@ -574,6 +742,8 @@ def get_response_with_history(user_input, conversation_history=None, longitude=N
         
         # Truy vấn cơ sở dữ liệu thông thường
         is_db_query, sql_query = classify_query_with_context(user_input, conversation_context)
+        print(f"🔍 QUERY_CLASSIFICATION: is_db_query={is_db_query}, user_input='{user_input}'")
+        
         if is_db_query:
             results = query_database(sql_query)
             if isinstance(results, str) or not results:
@@ -589,6 +759,8 @@ def get_response_with_history(user_input, conversation_history=None, longitude=N
                 }
 
             gyms = [safe_get_row_data(row) for row in results]
+            print(f"🎯 SEARCH_RESULT: Tìm thấy {len(gyms)} gym từ database")
+            
             prompt_response = create_simple_response(gyms, user_input)
 
             current_conversation.append({
@@ -682,22 +854,29 @@ def create_simple_response(gyms, user_input, is_nearby=False):
         response = f"🏋️ **Tìm thấy {len(gyms)} phòng gym!**\n"
         
         if hot_gyms:
-            response += "🔥 **Gợi ý phổ biến:**\n"
-            for gym in hot_gyms[:3]:
+            response += "🔥 **Các phòng gym phổ biến:**\n"
+            for i, gym in enumerate(hot_gyms, 1):
                 name = gym['gymName']
                 if gym.get('distance_km'):
                     name += f" ({format_distance_friendly(gym['distance_km'])})"
-                response += f"• **{name}**\n"
+                response += f"{i}. **{name}**\n"
+                
+            # Hiển thị các gym còn lại
+            other_gyms = [g for g in gyms if not g['hotResearch']]
+            if other_gyms:
+                response += "\n**Các phòng gym khác:**\n"
+                for i, gym in enumerate(other_gyms, len(hot_gyms) + 1):
+                    name = gym['gymName']
+                    if gym.get('distance_km'):
+                        name += f" ({format_distance_friendly(gym['distance_km'])})"
+                    response += f"{i}. **{name}**\n"
         else:
-            response += "**Top 3 gợi ý:**\n"
-            for gym in gyms[:3]:
+            response += "**Tất cả phòng gym:**\n"
+            for i, gym in enumerate(gyms, 1):
                 name = gym['gymName']
                 if gym.get('distance_km'):
                     name += f" ({format_distance_friendly(gym['distance_km'])})"
-                response += f"• **{name}**\n"
-        
-        if len(gyms) > 3:
-            response += f"\n...và {len(gyms) - 3} phòng gym khác nữa!"
+                response += f"{i}. **{name}**\n"
         
         return response
 
