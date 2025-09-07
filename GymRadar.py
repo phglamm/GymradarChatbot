@@ -79,7 +79,7 @@ def build_conversation_context(conversation_history: List[dict]) -> str:
     
     context_parts = []
     for msg in conversation_history[-10:]:  # Lấy 10 tin nhắn gần nhất làm ngữ cảnh
-        role_label = "Người dùng" if msg.get("role") == "user" else "GymRadar"
+        role_label = "Người dùng" if msg.get("role") == "user" else "FitBridge"
         content = sanitize_text_for_json(msg.get('content', ''))
         context_parts.append(f"{role_label}: {content}")
     
@@ -776,7 +776,7 @@ def get_response_with_history(user_input, conversation_history=None, longitude=N
 
         # Hội thoại tự do với Gemini
         enhanced_context = f"""
-        Bạn là GymRadar AI - trợ lý tìm kiếm phòng gym thân thiện và chuyên nghiệp tại Việt Nam.
+        Bạn là FitBridge AI - trợ lý tìm kiếm phòng gym thân thiện và chuyên nghiệp tại Việt Nam.
         
         Khả năng:
         - Đưa ra gợi ý phòng gym và thông tin chi tiết
